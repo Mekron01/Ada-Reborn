@@ -1,0 +1,44 @@
+# Termux-side Listener for Ada Voice App
+# Run this on your Termux device to receive and execute commands from the Ada mobile app
+
+import socket
+import json
+import subprocess
+
+HOST = '0.0.0.0'  # Listen on all interfaces
+PORT = 5050       # Match this with your app's PORT
+
+print(f"[+] Starting Ada Termux listener on port {PORT}")
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.bind((HOST, PORT))
+    s.listen()
+
+    while True:
+        conn, addr = s.accept()
+        with conn:
+            print(f"[+] Connection from {addr}")
+            data = conn.recv(1024).decode()
+            if not data:
+                continue
+
+            try:
+                payload = json.loads(data)
+                command = payload.get("command", "")
+
+                print(f"[>] Received command: {command}")
+
+                # Basic mapped responses
+                if command == "restart_termux":
+                    output = "Restarting Termux would kill the session, skipping..."
+                elif command == "run_diagnostics":
+                    output = subprocess.getoutput("uptime && df -h")
+                else:
+                    output = subprocess.getoutput(command)
+
+                conn.sendall(output.encode())
+
+            except Exception as e:
+                error_msg = f"Error processing command: {e}"
+                print(error_msg)
+                conn.sendall(error_msg.encode())
