@@ -1,0 +1,169 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+###############################################################################
+# ada_setup.sh
+# Automates installing dependencies, fetching & building whisper.cpp & piper,
+# and creating a sample 'ada_main.sh' script for offline STT+TTS.
+# Tested on Termux for Android (aarch64).
+#
+# Prerequisites:
+#   1. Install "Termux:API" (the separate Android app) from F-Droid or GitHub.
+#   2. Grant necessary permissions (Location, Storage) in Android settings.
+###############################################################################
+
+set -e  # Exit on error
+
+REPO_DIR="$HOME/Ada-Reborn"
+WHISPER_DIR="$REPO_DIR/whisper.cpp"
+PIPER_DIR="$REPO_DIR/piper"
+ADA_MAIN="$REPO_DIR/ada_main.sh"
+MODEL_DIR="$WHISPER_DIR/models"
+PIPER_MODEL_DIR="$PIPER_DIR/models"
+
+echo "=== [Ada Setup] Starting... ==="
+echo "Using REPO directory: $REPO_DIR"
+
+#-----------------------------------------------------------------------------
+# Step 1: Install Termux packages
+#-----------------------------------------------------------------------------
+echo "[1/6] Installing required packages..."
+pkg update -y && pkg upgrade -y
+pkg install -y git curl python cmake clang ffmpeg build-essential termux-api
+
+# (Optional) Tools sometimes useful for debugging:
+pkg install -y busybox net-tools
+
+#-----------------------------------------------------------------------------
+# Step 2: Prepare folder structure
+#-----------------------------------------------------------------------------
+echo "[2/6] Creating Ada-Reborn folder structure..."
+mkdir -p "$REPO_DIR"
+mkdir -p "$WHISPER_DIR"
+mkdir -p "$PIPER_DIR"
+
+#-----------------------------------------------------------------------------
+# Step 3: Fetch & build whisper.cpp
+#-----------------------------------------------------------------------------
+echo "[3/6] Cloning & building whisper.cpp..."
+if [ ! -d "$WHISPER_DIR/.git" ]; then
+  git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git "$WHISPER_DIR"
+fi
+
+cd "$WHISPER_DIR"
+# Pull any updates
+git pull || echo "whisper.cpp pull failed, continuing..."
+# Build
+echo "Building whisper.cpp..."
+bash ./models/download-model.sh base.en  # Example: downloads small 'base.en' model
+mkdir -p build && cd build
+cmake ..
+make
+
+# Move back out
+cd "$REPO_DIR"
+
+#-----------------------------------------------------------------------------
+# Step 4: Fetch & build piper
+#-----------------------------------------------------------------------------
+echo "[4/6] Cloning & building piper..."
+if [ ! -d "$PIPER_DIR/.git" ]; then
+  git clone --depth=1 https://github.com/rhasspy/piper.git "$PIPER_DIR"
+fi
+
+cd "$PIPER_DIR"
+# Pull any updates
+git pull || echo "piper pull failed, continuing..."
+# Build
+mkdir -p build && cd build
+cmake ..
+make
+
+# Example: get an English voice
+cd "$PIPER_DIR"
+mkdir -p "$PIPER_MODEL_DIR"
+# Grab a small, example English voice
+if [ ! -f "$PIPER_MODEL_DIR/en-us-amy-low.onnx" ]; then
+  echo "Downloading example piper voice (Amy) ..."
+  curl -L -o "$PIPER_MODEL_DIR/en-us-amy-low.onnx" \
+    https://github.com/rhasspy/piper/releases/download/v0.0.2/en-us-amy-low.onnx
+fi
+
+cd "$REPO_DIR"
+
+#-----------------------------------------------------------------------------
+# Step 5: Create the main Ada script
+#-----------------------------------------------------------------------------
+echo "[5/6] Creating sample 'ada_main.sh' for offline STT + TTS..."
+
+cat << 'EOF' > "$ADA_MAIN"
+#!/data/data/com.termux/files/usr/bin/bash
+###############################################################################
+# ada_main.sh
+# Example main script that:
+#   1. Records audio from the microphone
+#   2. Converts it to text with whisper.cpp
+#   3. Generates a response (currently just echoes the text)
+#   4. Speaks the response with piper
+#
+# This is a barebones example. In production, you'd integrate wake-word detection
+# and possibly an LLM for advanced responses.
+###############################################################################
+
+REPO_DIR="$HOME/Ada-Reborn"
+WHISPER_DIR="$REPO_DIR/whisper.cpp"
+PIPER_DIR="$REPO_DIR/piper"
+WHISPER_BUILD="$WHISPER_DIR/build"
+PIPER_BUILD="$PIPER_DIR/build"
+WHISPER_MODEL="$WHISPER_DIR/models/ggml-base.en.bin"
+PIPER_MODEL="$PIPER_DIR/models/en-us-amy-low.onnx"
+
+# Audio temp files
+AUDIO_RAW="/tmp/ada_recording.wav"
+AUDIO_TXT="/tmp/ada_transcript.txt"
+
+# 1. Record from mic (Termux: you must allow mic permission)
+echo "Recording 5 seconds of audio..."
+termux-microphone-record start -f $AUDIO_RAW
+sleep 5
+termux-microphone-record stop
+
+# 2. Run whisper.cpp to convert to text
+echo "Transcribing with whisper.cpp..."
+$WHISPER_BUILD/main -m "$WHISPER_MODEL" -f "$AUDIO_RAW" --language en --output-txt -of /tmp/ada_result --threads 4 --beam_size 1
+mv /tmp/ada_result.txt "$AUDIO_TXT" 2>/dev/null || echo "No transcription file found."
+
+# 3. Use the transcript as our 'command'
+TRANSCRIPT="$(cat "$AUDIO_TXT" 2>/dev/null || echo "(no input)")"
+echo "Heard: '$TRANSCRIPT'"
+
+# Basic logic: just echo or handle a known command
+RESPONSE="You said: $TRANSCRIPT"
+
+# 4. Use Piper to speak the response
+echo "Speaking with piper..."
+echo "$RESPONSE" | $PIPER_BUILD/piper --model "$PIPER_MODEL"
+
+# Cleanup
+rm -f "$AUDIO_RAW" "$AUDIO_TXT"
+
+EOF
+
+chmod +x "$ADA_MAIN"
+
+#-----------------------------------------------------------------------------
+# Step 6: Final instructions
+#-----------------------------------------------------------------------------
+echo "[6/6] Setup complete!"
+echo ""
+echo "== NEXT STEPS =="
+echo "1. Manually install the Termux:API Android app (if not done) from F-Droid or GitHub."
+echo "2. Grant Termux location + microphone permissions in Android settings."
+echo "3. (Optional) Customize the model files. For smaller STT/TTS or different languages, get them from the respective repos."
+echo "4. Run './ada_main.sh' to test a 5-second recording -> transcription -> TTS response."
+echo "   e.g.:"
+echo "       cd $REPO_DIR"
+echo "       ./ada_main.sh"
+echo ""
+echo "For advanced usage, integrate an LLM or add wake word detection. Good luck!"
+echo ""
+echo "=== [Ada Setup] All done! ==="
